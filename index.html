@@ -49,6 +49,18 @@
         .interactive-socket { transition: all 0.2s ease; cursor: pointer; }
         .interactive-socket:hover { fill: #1E293B !important; filter: drop-shadow(0 0 4px #6366F1); }
 
+        /* SPRINT 16: Animações Premium para Hover de Cards */
+        .card-glow-hover { transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .card-glow-hover:hover { 
+            transform: translateY(-4px) scale(1.01); 
+            box-shadow: 0 15px 35px -10px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(99, 102, 241, 0.4); 
+            z-index: 10;
+        }
+        
+        /* Ocultar elementos para Progressive Disclosure */
+        .reveal-on-hover { opacity: 0; transform: translateX(10px) scale(0.95); transition: all 0.3s ease; }
+        .card-glow-hover:hover .reveal-on-hover { opacity: 1; transform: translateX(0) scale(1); }
+
         /* Estilo invisível do PDF */
         #pdf-template-container { position: absolute; left: -9999px; top: 0; width: 800px; background: white; color: black; padding: 40px; font-family: 'Inter', sans-serif; }
         .pdf-header { border-bottom: 2px solid #4F46E5; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
@@ -56,12 +68,91 @@
         .pdf-table th { background-color: #F1F5F9; text-align: left; padding: 12px; font-size: 12px; text-transform: uppercase; border-bottom: 2px solid #E2E8F0; }
         .pdf-table td { padding: 16px 12px; border-bottom: 1px solid #E2E8F0; font-size: 14px; color: #1E293B; }
         .text-truncate-mini { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+        
+        /* Custom scrollbar class */
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
     </style>
 </head>
 <body class="font-sans antialiased min-h-screen pb-12 relative flex flex-col">
 
+    <!-- SPRINT 17: Cloud Sync Overlay (Tela de Carregamento da Nuvem) -->
+    <div id="cloud-sync-overlay" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex flex-col items-center justify-center transition-opacity duration-500">
+        <i class="fa-solid fa-cloud-arrow-down text-5xl text-indigo-500 animate-bounce mb-5"></i>
+        <h2 class="text-2xl font-black text-white tracking-widest uppercase mb-2">Conectando ao Data Center</h2>
+        <p class="text-indigo-400 text-sm font-bold animate-pulse">Sincronizando catálogo de hardwares em tempo real...</p>
+    </div>
+
+    <!-- SPRINT 17: Integração Firebase Firestore -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Inicialização do Firebase (Variáveis injetadas pelo ambiente de hospedagem)
+        let app, db, auth;
+        try {
+            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+            if(firebaseConfig) {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+            }
+        } catch (e) { console.error("Firebase config não encontrada. Rodando local.", e); }
+
+        // Função global para o app principal consumir a Nuvem
+        window.syncCloudDatabase = async function(fallbackData) {
+            const loadingOverlay = document.getElementById('cloud-sync-overlay');
+            let finalData = fallbackData;
+
+            if (db && auth) {
+                try {
+                    // Autenticação Segura
+                    const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                    if (token) {
+                        await signInWithCustomToken(auth, token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    // Regra de arquitetura: Localização do Catálogo Público
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'canva-hardware';
+                    const catalogRef = doc(db, 'artifacts', appId, 'public', 'data', 'catalog', 'latest_hardware');
+                    
+                    const docSnap = await getDoc(catalogRef);
+                    if (docSnap.exists()) {
+                        console.log("☁️ SUCESSO: Catálogo baixado do Banco de Dados em Nuvem!");
+                        finalData = docSnap.data().hardware;
+                    } else {
+                        console.log("☁️ INITIAL SETUP: Semeando Banco de Dados pela primeira vez...");
+                        await setDoc(catalogRef, { hardware: fallbackData, updated_at: new Date().toISOString() });
+                    }
+                } catch (e) {
+                    console.error("Erro na sincronização em nuvem, usando cache local de emergência:", e);
+                }
+            } else {
+                console.warn("Modo Offline Ativo: Firebase não configurado. Usando Mock Data.");
+            }
+
+            // Oculta a tela de carregamento suavemente
+            setTimeout(() => {
+                if(loadingOverlay) {
+                    loadingOverlay.style.opacity = '0';
+                    setTimeout(() => loadingOverlay.classList.add('hidden'), 500);
+                }
+            }, 800); // pequeno delay para leitura da tela
+
+            return finalData;
+        };
+    </script>
+
     <script>
-        const HARDWARE_DATABASE = {
+        // --- 1. CONFIGURAÇÕES E BANCO DE DADOS (GLOBAL) ---
+        // A variável agora inicia vazia e aguarda a Nuvem
+        let HARDWARE_DATABASE = {}; 
+        
+        // Mantemos nosso DB antigo como "Fallback Local" (Plano B caso a internet caia)
+        const LOCAL_FALLBACK_DATABASE = {
             cpus: [
                 { id: "cpu-9800x3d", brand: "AMD", name: "Ryzen 7 9800X3D", tier: "God Tier", score: 100, price: 3499, store: "Kabum", socket: "AM5", ramGen: "DDR5", tdp: 120 },
                 { id: "cpu-7800x3d", brand: "AMD", name: "Ryzen 7 7800X3D", tier: "God Tier", score: 92, price: 2699, store: "Pichau", socket: "AM5", ramGen: "DDR5", tdp: 120 },
@@ -69,7 +160,7 @@
                 { id: "cpu-7600", brand: "AMD", name: "Ryzen 5 7600", tier: "Mid Tier", score: 54, price: 1189, store: "Pichau", socket: "AM5", ramGen: "DDR5", tdp: 65 },
                 { id: "cpu-5500", brand: "AMD", name: "Ryzen 5 5500", tier: "Low Tier", score: 40, price: 599, store: "Terabyte", socket: "AM4", ramGen: "DDR4", tdp: 65 }
             ],
-            gpus: [ // Sprint 10: Added length (mm)
+            gpus: [
                 { id: "gpu-5090", brand: "NVIDIA", name: "NVIDIA RTX 5090", tier: "God Tier", score: 100, price: 14850, store: "Terabyte", tdp: 600, length: 355 },
                 { id: "gpu-4090", brand: "NVIDIA", name: "NVIDIA RTX 4090", tier: "God Tier", score: 85, price: 11200, store: "Pichau", tdp: 450, length: 340 },
                 { id: "gpu-4070tis", brand: "NVIDIA", name: "NVIDIA RTX 4070 Ti S", tier: "High Tier", score: 56, price: 5099, store: "Pichau", tdp: 285, length: 305 },
@@ -94,33 +185,32 @@
                 { id: "mobo-tuf", brand: "ASUS", name: "ASUS TUF B650-Plus WiFi", tier: "Decent Tier", score: 72, price: 1599, store: "Pichau", socket: "AM5", ramGen: "DDR5", tdp: 35 },
                 { id: "mobo-prime", brand: "ASUS", name: "ASUS Prime B550M-A", tier: "Mid Tier", score: 48, price: 749, store: "Pichau", socket: "AM4", ramGen: "DDR4", tdp: 25 }
             ],
-            cases: [ // Sprint 10: New Cases Database
+            cases: [
                 { id: "case-hyte", brand: "Hyte", name: "HYTE Y70 Touch Infinite", tier: "God Tier", score: 100, price: 2899, store: "Kabum", maxGpuLength: 422, tdp: 20 },
                 { id: "case-4000d", brand: "Corsair", name: "Corsair 4000D Airflow", tier: "High Tier", score: 85, price: 649, store: "Pichau", maxGpuLength: 360, tdp: 15 },
                 { id: "case-nr200", brand: "CoolerMaster", name: "Cooler Master NR200 ITX", tier: "Decent Tier", score: 75, price: 799, store: "Terabyte", maxGpuLength: 330, tdp: 10 },
                 { id: "case-aigo", brand: "Aigo", name: "Aigo DarkFlash C285", tier: "Low Tier", score: 40, price: 299, store: "Pichau", maxGpuLength: 410, tdp: 5 }
             ],
-            // SPRINT 12: Periféricos e Monitores
             monitors: [
-                { id: "mon-oled4k", brand: "Alienware", name: "AW3225QF 32' 4K QD-OLED", tier: "God Tier", price: 7999, store: "Kabum", hz: 240, res: "4K" },
-                { id: "mon-oled1440", brand: "LG", name: "UltraGear 27' OLED 1440p", tier: "High Tier", price: 4599, store: "Pichau", hz: 240, res: "1440p" },
-                { id: "mon-ips1440", brand: "Dell", name: "G2724D 27' IPS 1440p", tier: "Decent Tier", price: 1899, store: "Terabyte", hz: 165, res: "1440p" },
-                { id: "mon-ips1080", brand: "AOC", name: "Hero 24' IPS 1080p", tier: "Low Tier", price: 799, store: "Pichau", hz: 144, res: "1080p" }
+                { id: "mon-oled4k", brand: "Alienware", name: "AW3225QF 32' 4K QD-OLED", tier: "God Tier", score: 100, price: 7999, store: "Kabum", hz: 240, res: "4K" },
+                { id: "mon-oled1440", brand: "LG", name: "UltraGear 27' OLED 1440p", tier: "High Tier", score: 85, price: 4599, store: "Pichau", hz: 240, res: "1440p" },
+                { id: "mon-ips1440", brand: "Dell", name: "G2724D 27' IPS 1440p", tier: "Decent Tier", score: 70, price: 1899, store: "Terabyte", hz: 165, res: "1440p" },
+                { id: "mon-ips1080", brand: "AOC", name: "Hero 24' IPS 1080p", tier: "Low Tier", score: 40, price: 799, store: "Pichau", hz: 144, res: "1080p" }
             ],
             keyboards: [
-                { id: "kb-wooting", brand: "Wooting", name: "Wooting 60HE+", tier: "God Tier", price: 1499, store: "Kabum" },
-                { id: "kb-logi", brand: "Logitech", name: "G Pro X TKL", tier: "High Tier", price: 899, store: "Pichau" },
-                { id: "kb-redragon", brand: "Redragon", name: "Kumara Pro", tier: "Low Tier", price: 249, store: "Terabyte" }
+                { id: "kb-wooting", brand: "Wooting", name: "Wooting 60HE+", tier: "God Tier", score: 100, price: 1499, store: "Kabum" },
+                { id: "kb-logi", brand: "Logitech", name: "G Pro X TKL", tier: "High Tier", score: 80, price: 899, store: "Pichau" },
+                { id: "kb-redragon", brand: "Redragon", name: "Kumara Pro", tier: "Low Tier", score: 40, price: 249, store: "Terabyte" }
             ],
             mice: [
-                { id: "mouse-gpro", brand: "Logitech", name: "G Pro X Superlight 2", tier: "God Tier", price: 899, store: "Kabum" },
-                { id: "mouse-razer", brand: "Razer", name: "Viper V3 HyperSpeed", tier: "High Tier", price: 549, store: "Pichau" },
-                { id: "mouse-g203", brand: "Logitech", name: "G203 Lightsync", tier: "Low Tier", price: 149, store: "Terabyte" }
+                { id: "mouse-gpro", brand: "Logitech", name: "G Pro X Superlight 2", tier: "God Tier", score: 100, price: 899, store: "Kabum" },
+                { id: "mouse-razer", brand: "Razer", name: "Viper V3 HyperSpeed", tier: "High Tier", score: 85, price: 549, store: "Pichau" },
+                { id: "mouse-g203", brand: "Logitech", name: "G203 Lightsync", tier: "Low Tier", score: 45, price: 149, store: "Terabyte" }
             ],
             headsets: [
-                { id: "audio-maxwell", brand: "Audeze", name: "Maxwell Wireless", tier: "God Tier", price: 2499, store: "Kabum" },
-                { id: "audio-hyperx", brand: "HyperX", name: "Cloud III Wireless", tier: "High Tier", price: 899, store: "Pichau" },
-                { id: "audio-havit", brand: "Havit", name: "H2002D", tier: "Low Tier", price: 159, store: "Terabyte" }
+                { id: "audio-maxwell", brand: "Audeze", name: "Maxwell Wireless", tier: "God Tier", score: 100, price: 2499, store: "Kabum" },
+                { id: "audio-hyperx", brand: "HyperX", name: "Cloud III Wireless", tier: "High Tier", score: 80, price: 899, store: "Pichau" },
+                { id: "audio-havit", brand: "Havit", name: "H2002D", tier: "Low Tier", score: 40, price: 159, store: "Terabyte" }
             ]
         };
 
@@ -132,6 +222,7 @@
             ultra: { cpu: "cpu-9800x3d", gpu: "gpu-5090", ssd: "ssd-t705", ram: "ram-trident", mobo: "mobo-godlike", case: "case-hyte", monitor: "mon-oled4k", keyboard: "kb-wooting", mouse: "mouse-gpro", headset: "audio-maxwell" }
         };
 
+        // --- 2. STATE MANAGEMENT (ZUSTAND PATTERN) ---
         class HardwareStore {
             constructor(init) { this.state = init; this.subscribers = []; }
             getState() { return this.state; }
@@ -141,13 +232,622 @@
         }
 
         const store = new HardwareStore({
-            selections: PRESETS.intermediario,
+            selections: PRESETS.intermediario, // Initial state
             modalOpen: null,
             filters: { search: "" },
             aiLoading: false
         });
+        
+        // --- 3. UTILS & HELPERS ---
+        const formatMoney = (v) => v ? v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 0 }) : 'R$ 0';
+        
+        const COMP_CONFIG = {
+            cpu: { label: "Processador", db: "cpus", icon: '<i class="fa-solid fa-microchip"></i>' },
+            gpu: { label: "Placa de Vídeo", db: "gpus", icon: '<i class="fa-solid fa-fan"></i>' },
+            mobo: { label: "Placa Mãe", db: "mobos", icon: '<i class="fa-solid fa-chess-board"></i>' },
+            ram: { label: "Memória RAM", db: "rams", icon: '<i class="fa-solid fa-memory"></i>' },
+            ssd: { label: "SSD", db: "ssds", icon: '<i class="fa-solid fa-hard-drive"></i>' },
+            case: { label: "Gabinete", db: "cases", icon: '<i class="fa-solid fa-box"></i>' },
+            monitor: { label: "Monitor", db: "monitors", icon: '<i class="fa-solid fa-display"></i>' },
+            keyboard: { label: "Teclado", db: "keyboards", icon: '<i class="fa-solid fa-keyboard"></i>' },
+            mouse: { label: "Mouse", db: "mice", icon: '<i class="fa-solid fa-computer-mouse"></i>' },
+            headset: { label: "Headset", db: "headsets", icon: '<i class="fa-solid fa-headphones"></i>' }
+        };
+
+        const TIER_COLORS = { 
+            "God Tier": "text-sky-400 bg-sky-500/10", 
+            "High Tier": "text-emerald-400 bg-emerald-500/10", 
+            "Decent Tier": "text-yellow-500 bg-yellow-500/10", 
+            "Mid Tier": "text-orange-400 bg-orange-500/10", 
+            "Low Tier": "text-red-400 bg-red-500/10" 
+        };
+
+        function getDetails(selections) {
+            let res = {};
+            for(let key in COMP_CONFIG) { res[key] = HARDWARE_DATABASE[COMP_CONFIG[key].db].find(x => x.id === selections[key]) || null; }
+            return res;
+        }
+
+        // UI Toast Notification System
+        function showToast(msg, isErr=false) {
+            const t = document.createElement("div");
+            t.className = `fixed bottom-5 right-5 z-50 p-4 rounded-xl border text-xs font-bold transition-all transform translate-y-10 opacity-0 ${isErr ? 'bg-red-950 border-red-500 text-red-400' : 'bg-indigo-950 border-indigo-500 text-indigo-400'} shadow-2xl`;
+            t.innerText = msg; document.body.appendChild(t);
+            // Trigger animation
+            setTimeout(() => t.classList.remove('translate-y-10', 'opacity-0'), 50);
+            setTimeout(() => { 
+                t.classList.add('translate-y-10', 'opacity-0'); 
+                setTimeout(()=>t.remove(), 300); 
+            }, 3000);
+        }
+
+        // --- 4. ACTION HANDLERS ---
+        function clearCurrentBuild() { 
+            store.setState({ selections: { ...EMPTY_SETUP } }); 
+            showToast("Setup apagado. Selecione novas peças.", true); 
+        }
+        
+        function handlePreset(key) { 
+            store.setState({ selections: PRESETS[key] }); 
+            showToast(`Preset '${key}' carregado com sucesso!`); 
+        }
+        
+        function removeItem(cat, event) {
+            if (event) event.stopPropagation(); // Previne abrir modal se clicou no lixo do card
+            store.setState({ selections: { ...store.getState().selections, [cat]: null } });
+            showToast(`${COMP_CONFIG[cat].label} removido.`, true);
+        }
+
+        function checkoutCart() {
+            // Sprint 11: Módulo de Checkout Simulado
+            showToast("🛒 Redirecionando para as lojas com seu ID de afiliado...");
+        }
+
+        // --- SPRINT 14: Serialização Base64 para Compartilhamento ---
+        function copyShareLink() {
+            try {
+                const currentSelections = store.getState().selections;
+                // Transforma objeto {cpu: 'id', gpu: 'id'} em string compactada 'cpu:id|gpu:id'
+                const selectionPairs = Object.entries(currentSelections)
+                    .filter(([_, val]) => val !== null)
+                    .map(([key, val]) => `${key}:${val}`);
+                
+                const compactString = selectionPairs.join('|');
+                const base64Str = btoa(compactString); // Codifica
+                
+                // Constrói URL segura
+                const shareUrl = new URL(window.location.href);
+                shareUrl.searchParams.set('build', base64Str);
+                
+                // Copia via API moderna
+                navigator.clipboard.writeText(shareUrl.toString()).then(() => {
+                    showToast("✅ Link copiado para a área de transferência! Envie para seus amigos.");
+                });
+            } catch (e) {
+                console.error("Erro ao gerar link:", e);
+                showToast("Erro ao gerar link de compartilhamento.", true);
+            }
+        }
+
+        // Ler URL ao carregar
+        function parseURLBuild() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const buildHash = urlParams.get('build');
+            
+            if (buildHash) {
+                try {
+                    const decodedStr = atob(buildHash); // Decodifica
+                    const pairs = decodedStr.split('|');
+                    let importedSetup = { ...EMPTY_SETUP };
+                    
+                    pairs.forEach(pair => {
+                        const [key, val] = pair.split(':');
+                        if(key && val && COMP_CONFIG[key]) {
+                            importedSetup[key] = val;
+                        }
+                    });
+                    
+                    store.setState({ selections: importedSetup });
+                    showToast("Setup importado via link com sucesso! 📦");
+                    
+                    // Limpa a barra de endereços para não poluir
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                } catch(e) {
+                    console.error("Link inválido:", e);
+                    showToast("O link de compartilhamento parece estar corrompido.", true);
+                }
+            }
+        }
+        
+        // --- SPRINT 15/16: AI Copilot Natural Language Engine ---
+        function handleAIQuery() {
+            const inputEl = document.getElementById("ai-prompt-input");
+            const btnEl = document.getElementById("ai-submit-btn");
+            const query = inputEl.value.toLowerCase();
+            
+            if(!query.trim()) { 
+                showToast("Por favor, me conte o que você quer fazer com o PC!", true); 
+                inputEl.focus();
+                return; 
+            }
+
+            btnEl.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Processando...';
+            btnEl.classList.add("opacity-80", "cursor-wait");
+            inputEl.disabled = true;
+
+            // Simula NLP Processing time
+            setTimeout(() => {
+                let chosenPreset = "intermediario"; 
+                let aiMessage = "Equilibrei um setup com ótimo custo-benefício para suas necessidades gerais!";
+
+                // Intent extraction baseada em keywords (Gemini Simulation)
+                if (query.includes("4k") || query.includes("gta") || query.includes("cyberpunk") || query.includes("pesado") || query.includes("render") || query.includes("stream") || query.includes("high")) {
+                    chosenPreset = "highend";
+                    aiMessage = "Foco em Alta Performance! Esse setup vai rodar jogos em 4K e renderizações pesadas com folga.";
+                }
+                if (query.includes("ultra") || query.includes("melhor") || query.includes("ostentação") || query.includes("limite") || query.includes("5090") || query.includes("8k") || query.includes("nasa")) {
+                    chosenPreset = "ultra";
+                    aiMessage = "Modo Ostentação ativado! 🔥 Separei os hardwares mais poderosos do planeta para você.";
+                }
+                if (query.includes("barato") || query.includes("entrada") || query.includes("lol") || query.includes("cs") || query.includes("valorant") || query.includes("escritorio") || query.includes("estudar") || query.includes("simples")) {
+                    chosenPreset = "entrada";
+                    aiMessage = "Foco em Economia! Setup focado em e-Sports e tarefas diárias sem pesar no bolso.";
+                }
+
+                store.setState({ selections: PRESETS[chosenPreset] });
+                
+                btnEl.innerHTML = 'Gerar Magia';
+                btnEl.classList.remove("opacity-80", "cursor-wait");
+                inputEl.disabled = false;
+                
+                showToast(`🤖 Gemini Copilot: ${aiMessage}`);
+            }, 1500); 
+        }
+
+        // --- 5. MODAL & COMPARISON LOGIC (SPRINT 16) ---
+        let currentItemInModalContext = null;
+
+        function openModal(cat) {
+            store.setState({ modalOpen: cat });
+            const currentState = store.getState().selections;
+            currentItemInModalContext = getDetails(currentState)[cat];
+
+            document.getElementById("swap-modal").classList.remove("opacity-0", "pointer-events-none");
+            document.getElementById("modal-content").classList.remove("scale-95");
+            document.getElementById("modal-category-name").innerText = `Escolher ${COMP_CONFIG[cat].label}`;
+
+            // Exibir Painel de Comparação Atual se houver item selecionado
+            const panel = document.getElementById("modal-current-item-panel");
+            if (currentItemInModalContext) {
+                panel.classList.remove("hidden");
+                document.getElementById("modal-current-name").innerText = currentItemInModalContext.name;
+                document.getElementById("modal-current-score").innerText = `Score Atual: ${currentItemInModalContext.score || 'N/A'}`;
+                document.getElementById("modal-current-price").innerText = formatMoney(currentItemInModalContext.price);
+            } else {
+                panel.classList.add("hidden");
+            }
+        }
+        
+        function closeModal() {
+            document.getElementById("swap-modal").classList.add("opacity-0", "pointer-events-none");
+            document.getElementById("modal-content").classList.add("scale-95");
+            store.setState({ modalOpen: null, filters: { search: "" } });
+            currentItemInModalContext = null; // reset context
+        }
+        
+        function updateFilters(val) { store.setState({ filters: { search: val.toLowerCase() } }); }
+        function selectItem(cat, id) { store.setState({ selections: { ...store.getState().selections, [cat]: id } }); closeModal(); }
+
+        // --- 6. RENDER LOGIC (CORE SUBSCRIPTION) ---
+        
+        // Benchmarks Module
+        function renderBenchmarks(details) {
+            const bEsports = document.getElementById("bench-esports");
+            const bAaa = document.getElementById("bench-aaa");
+            const bWork = document.getElementById("bench-work");
+            
+            if(!details.cpu || !details.gpu) {
+                bEsports.innerText = "-- FPS"; bAaa.innerText = "-- FPS"; bWork.innerText = "-- Pts";
+                return;
+            }
+            
+            // Algoritmo sintético baseado em score
+            let cS = details.cpu.score; let gS = details.gpu.score;
+            bEsports.innerText = `${Math.floor((cS * 7) + (gS * 1.5))} FPS`; // 1080p foca mais em CPU
+            bAaa.innerText = `${Math.floor((cS * 0.4) + (gS * 1.1))} FPS`; // 4K foca mais em GPU
+            bWork.innerText = `${Math.floor((cS * 90) + (details.ram ? details.ram.score * 20 : 0))}`;
+        }
+
+        // Diagnostics / Bottleneck Module
+        function renderDiagnostics(details) {
+            const box = document.getElementById("stability-indicator");
+            const badge = document.getElementById("indicator-badge");
+            const txt = document.getElementById("indicator-text");
+
+            if (!details.cpu || !details.gpu || !details.mobo || !details.ram || !details.case) {
+                box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-slate-900/50 border-slate-800 transition-colors";
+                badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-slate-800 text-slate-400";
+                badge.innerText = "Setup Incompleto"; 
+                txt.innerText = "Faltam componentes core (CPU, GPU, Placa Mãe, RAM ou Gabinete) para análise."; 
+                return;
+            }
+
+            // Checagem de Clearance Físico (Sprint 10)
+            if (details.gpu.length > details.case.maxGpuLength) {
+                box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-red-500/10 border-red-500/30 transition-colors";
+                badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-red-500/20 text-red-400";
+                badge.innerText = "Incompatibilidade Física (Gabinete)";
+                txt.innerHTML = `A Placa de vídeo tem <b>${details.gpu.length}mm</b>, mas o gabinete suporta no máximo <b>${details.case.maxGpuLength}mm</b>. A GPU não vai caber.`;
+                return;
+            }
+
+            // Checagem de Socket e RAM (Física Básica)
+            if (details.cpu.socket !== details.mobo.socket || details.ram.ramGen !== details.mobo.ramGen) {
+                box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-red-500/10 border-red-500/30 transition-colors";
+                badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-red-500/20 text-red-400";
+                badge.innerText = "Incompatibilidade Crítica";
+                txt.innerText = "Atenção: A Placa Mãe não suporta o socket do Processador ou a geração da Memória RAM.";
+                return;
+            }
+
+            // Gargalo de Monitor (Sprint 12)
+            if (details.monitor && details.gpu && (details.gpu.tier === "God Tier" || details.gpu.tier === "High Tier")) {
+                if (details.monitor.res === "1080p" || details.monitor.hz < 144) {
+                    box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-amber-500/10 border-amber-500/30 transition-colors";
+                    badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-amber-500/20 text-amber-400";
+                    badge.innerText = "Gargalo de Visualização";
+                    txt.innerHTML = `Sua GPU é muito potente (<b>${details.gpu.tier}</b>), mas o monitor limita a experiência a <b>${details.monitor.res} @ ${details.monitor.hz}Hz</b>.`;
+                    return;
+                }
+            }
+
+            // Tudo OK
+            box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-emerald-500/10 border-emerald-500/30 transition-colors";
+            badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-emerald-500/20 text-emerald-400";
+            badge.innerText = "Setup Equilibrado"; 
+            txt.innerText = "Compatibilidade física e técnica confirmadas. Boa harmonia entre os componentes.";
+        }
+
+        // --- PDF EXPORT LOGIC ---
+        function exportToPDF() {
+            const element = document.getElementById('pdf-template-container');
+            const state = store.getState().selections;
+            const details = getDetails(state);
+            
+            // Popula Tabela
+            const tbody = document.getElementById('pdf-body');
+            tbody.innerHTML = '';
+            let pdfTotal = 0;
+            
+            // Adiciona a data atual
+            const today = new Date();
+            document.getElementById('pdf-date').innerText = `Gerado em: ${today.toLocaleDateString('pt-BR')} às ${today.toLocaleTimeString('pt-BR')}`;
+            
+            for(let key in COMP_CONFIG) {
+                if(details[key]) {
+                    tbody.innerHTML += `<tr><td style="font-weight:bold;">${COMP_CONFIG[key].label}</td><td>${details[key].name}</td><td>${formatMoney(details[key].price)}</td></tr>`;
+                    pdfTotal += details[key].price;
+                }
+            }
+            
+            document.getElementById('pdf-total').innerText = formatMoney(pdfTotal);
+            
+            showToast("Gerando documento PDF... Aguarde.");
+            
+            // Config e disparo do Html2Pdf
+            const opt = {
+                margin: 0,
+                filename: `Orcamento_Setup_Canva_${today.getTime()}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2 },
+                jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+            };
+            
+            // Mostra o container (fora da tela) temporariamente para o canvas ler
+            element.style.left = '0';
+            element.style.zIndex = '-1';
+            
+            html2pdf().set(opt).from(element).save().then(() => {
+                element.style.left = '-9999px'; // Esconde de novo
+                showToast("PDF gerado com sucesso! 📄");
+            });
+        }
+
+        // --- MAIN RENDER LOOP ---
+        store.subscribe((state) => {
+            const d = getDetails(state.selections);
+            let total = 0, tdp = 0;
+            
+            document.getElementById("cards-container").innerHTML = "";
+            document.getElementById("sticky-summary-list").innerHTML = "";
+            
+            // UI HUD Logos
+            const hudCpu = document.getElementById('hud-logo-cpu');
+            const hudGpu = document.getElementById('hud-logo-gpu');
+            const cCpu = document.getElementById('circuit-cpu');
+            const cGpu = document.getElementById('circuit-gpu');
+            
+            if(hudCpu && cCpu) {
+                if(d.cpu) {
+                    hudCpu.innerText = d.cpu.brand;
+                    cCpu.classList.remove('circuit-offline');
+                    // Dynamic color based on brand
+                    if(d.cpu.brand === "AMD") cCpu.setAttribute('stroke', '#EF4444');
+                    else if (d.cpu.brand === "Intel") cCpu.setAttribute('stroke', '#3B82F6');
+                } else {
+                    hudCpu.innerText = "";
+                    cCpu.classList.add('circuit-offline');
+                }
+            }
+            
+            if(hudGpu && cGpu) {
+                 if(d.gpu) {
+                    hudGpu.innerText = d.gpu.brand;
+                    cGpu.classList.remove('circuit-offline');
+                    if(d.gpu.brand === "NVIDIA") cGpu.setAttribute('stroke', '#10B981');
+                    else if (d.gpu.brand === "AMD") cGpu.setAttribute('stroke', '#EF4444');
+                } else {
+                    hudGpu.innerText = "";
+                    cGpu.classList.add('circuit-offline');
+                }
+            }
+
+            // Variável para capacidade máxima calculada da fonte (segurança)
+            let recommendedPsuWattage = 0;
+
+            for(let key in COMP_CONFIG) {
+                const conf = COMP_CONFIG[key]; const item = d[key];
+                
+                // --- LATERAL SUMMARY RENDER ---
+                document.getElementById("sticky-summary-list").insertAdjacentHTML('beforeend', `
+                    <div class="flex items-center justify-between group ${!item ? 'opacity-30' : ''}">
+                        <div class="flex items-center gap-2 overflow-hidden">
+                            <div class="text-[10px] text-indigo-400 w-4">${conf.icon}</div>
+                            <span class="text-[10px] text-slate-200 text-truncate-mini" title="${item ? item.name : 'Vazio'}">${item ? item.name : 'Vazio'}</span>
+                        </div>
+                        ${item ? `<button onclick="removeItem('${key}', event)" class="text-slate-500 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-1 focus:opacity-100" title="Remover"><i class="fa-solid fa-xmark text-[10px]"></i></button>` : ''}
+                    </div>
+                `);
+
+                // --- CENTRAL CARDS RENDER ---
+                if(!item) {
+                    // Empty Card State
+                    document.getElementById("cards-container").insertAdjacentHTML('beforeend', `
+                        <div onclick="openModal('${key}')" class="glass-card rounded-xl p-4 flex items-center gap-4 cursor-pointer border border-dashed border-slate-700/80 hover:bg-slate-900/40 opacity-50 group transition-all hover:opacity-100">
+                            <div class="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center text-slate-500 text-lg group-hover:text-indigo-400 group-hover:bg-indigo-950 transition-colors">${conf.icon}</div>
+                            <div>
+                                <span class="text-[9px] font-bold text-slate-500 uppercase block">${conf.label}</span>
+                                <h4 class="text-xs text-slate-400 group-hover:text-indigo-300">Clique para selecionar...</h4>
+                            </div>
+                        </div>`);
+                } else {
+                    // Filled Card State
+                    total += item.price; 
+                    tdp += item.tdp || 0;
+                    
+                    // SPRINT 16: Lógica de cores das lojas
+                    let storeColor = "text-blue-400 bg-blue-500/10 border-blue-500/20";
+                    let storeBorderGlow = "hover:border-blue-500/50";
+                    if(item.store === "Kabum") { storeColor = "text-orange-400 bg-orange-500/10 border-orange-500/20"; storeBorderGlow = "hover:border-orange-500/50"; }
+                    if(item.store === "Pichau") { storeColor = "text-rose-400 bg-rose-500/10 border-rose-500/20"; storeBorderGlow = "hover:border-rose-500/50"; }
+                    if(item.store === "Terabyte") { storeColor = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"; storeBorderGlow = "hover:border-emerald-500/50"; }
+
+                    // SPRINT 16: Lógica de cor da marca para glow do thumbnail
+                    let brandGlowColor = "shadow-indigo-500/20";
+                    if(item.brand === "NVIDIA") brandGlowColor = "shadow-emerald-500/30 group-hover:shadow-emerald-500/50 border-emerald-900/50";
+                    if(item.brand === "AMD") brandGlowColor = "shadow-red-500/30 group-hover:shadow-red-500/50 border-red-900/50";
+                    if(item.brand === "Intel") brandGlowColor = "shadow-blue-500/30 group-hover:shadow-blue-500/50 border-blue-900/50";
+
+                    // URL Mock for Affiliate/Store Link
+                    const searchUrl = 'https://www.google.com/search?q=' + encodeURIComponent(item.name + ' comprar ' + item.store);
+                    
+                    // Placeholder Image generation
+                    const fallbackText = item.brand ? item.brand.substring(0,4).toUpperCase() : 'HW';
+                    const imgUrl = 'https://placehold.co/80x80/0F1626/6366F1?text=' + encodeURIComponent(fallbackText);
+
+                    // SPRINT 15: Deal Analyzer Badge Logic
+                    const isGreatDeal = (item.id.length % 3 === 0);
+                    const dealBadgeHtml = isGreatDeal ? `<span class="text-[7px] font-black uppercase tracking-widest text-orange-400 bg-orange-500/10 px-2 py-0.5 rounded border border-orange-500/20 flex items-center gap-1 animate-pulse shadow-sm shadow-orange-500/20"><i class="fa-solid fa-fire"></i> Hot Deal</span>` : '';
+
+                    // SPRINT 16: Refined Hero Card Design with Progressive Disclosure (hover actions)
+                    document.getElementById("cards-container").insertAdjacentHTML('beforeend', `
+                        <div onclick="openModal('${key}')" class="glass-card rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-5 cursor-pointer border border-slate-800/80 bg-slate-900/30 group relative overflow-visible card-glow-hover ${storeBorderGlow}">
+                            
+                            <!-- Area Principal (Esquerda) -->
+                            <div class="flex items-center gap-5 w-full md:w-auto flex-1">
+                                <!-- Thumbnail (Escondido em mobile mto pequeno) -->
+                                <div class="w-16 h-16 rounded-xl bg-slate-950 border flex-shrink-0 overflow-hidden relative transition-all shadow-lg ${brandGlowColor} hidden sm:block z-10 group-hover:-translate-y-1 group-hover:rotate-1 duration-300">
+                                    <img src="${imgUrl}" alt="${item.brand}" class="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-110 transition-all duration-500">
+                                </div>
+                                
+                                <div class="flex flex-col flex-1 relative z-20">
+                                    <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+                                        <span class="text-[9px] font-bold text-slate-400/80 uppercase flex items-center gap-1.5">${conf.icon} ${conf.label}</span>
+                                        ${dealBadgeHtml}
+                                    </div>
+                                    <h4 class="text-sm md:text-base font-extrabold text-slate-100 mb-2 leading-tight group-hover:text-white transition-colors">${item.name}</h4>
+                                    
+                                    <!-- Badges Horizontais -->
+                                    <div class="flex gap-2 items-center flex-wrap">
+                                        <span class="text-[9px] px-2 py-0.5 rounded-md uppercase font-black tracking-wider border border-transparent shadow-sm ${TIER_COLORS[item.tier] || ''}">${item.tier}</span>
+                                        <span class="text-[9px] px-2 py-0.5 rounded-md uppercase font-bold border shadow-sm ${storeColor}"><i class="fa-solid fa-store mr-1"></i> ${item.store}</span>
+                                        ${item.score ? `<span class="text-[9px] px-2 py-0.5 rounded-md font-bold bg-slate-800 text-slate-300 border border-slate-700 ml-auto md:ml-0 shadow-sm"><i class="fa-solid fa-bolt text-amber-400 mr-1"></i>Score: ${item.score}</span>` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Area de Preço e Ações (Direita/Bottom) -->
+                            <div class="flex flex-row md:flex-col items-center md:items-end justify-between md:justify-center gap-3 mt-4 md:mt-0 pt-4 md:pt-0 border-t md:border-t-0 border-slate-800/50 md:pl-4 md:ml-auto w-full md:w-auto relative z-20">
+                                
+                                <div class="flex flex-col md:items-end w-full md:w-auto">
+                                    <span class="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-0.5 hidden md:block">Melhor Preço</span>
+                                    <span class="text-lg md:text-xl font-black text-emerald-400 tracking-tight drop-shadow-sm group-hover:scale-105 transition-transform origin-right">${formatMoney(item.price)}</span>
+                                </div>
+
+                                <!-- Ações Contextuais (Progressive Disclosure - Ocultas até Hover) -->
+                                <div class="flex gap-2 reveal-on-hover md:absolute md:-bottom-2 md:right-0 md:translate-y-full md:pt-3">
+                                    <a href="${searchUrl}" target="_blank" onclick="event.stopPropagation()" title="Ver na ${item.store}" class="h-8 px-3 rounded-lg bg-indigo-600/90 hover:bg-indigo-500 text-white text-[10px] font-extrabold tracking-wide uppercase flex items-center gap-1.5 transition-colors border border-indigo-500/50 shadow-[0_0_15px_rgba(79,70,229,0.3)] backdrop-blur-md">
+                                        <i class="fa-solid fa-cart-shopping"></i> Comprar
+                                    </a>
+                                    <button onclick="removeItem('${key}', event)" title="Excluir peça" class="w-8 h-8 rounded-lg bg-slate-900/80 hover:bg-rose-500 text-slate-400 hover:text-white flex items-center justify-center transition-all border border-slate-700/50 hover:border-rose-500/50 hover:shadow-[0_0_15px_rgba(244,63,94,0.3)] backdrop-blur-md">
+                                        <i class="fa-solid fa-trash-can text-xs"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>`);
+                }
+            }
+
+            // Update Total Prices & Power Meter
+            document.getElementById("sticky-price-final").innerText = formatMoney(total);
+            document.getElementById("tdp-total-value").innerText = `${tdp} W`;
+            
+            // Render Benchmarks & Diagnostics
+            renderBenchmarks(d);
+            renderDiagnostics(d);
+
+            // SPRINT 16: Cálculo preciso e marcas de segurança no Power Meter
+            let rec = "--";
+            let maxCapacity = 1000; 
+            if (tdp > 0) {
+                // Regra prática segura: Consumo real x 1.5 para eficiência máxima e picos
+                const targetWattage = tdp * 1.5; 
+                if (targetWattage <= 450) { rec = "500W Bronze"; recommendedPsuWattage = 500; maxCapacity = 500; }
+                else if (targetWattage <= 600) { rec = "650W Gold"; recommendedPsuWattage = 650; maxCapacity = 650; }
+                else if (targetWattage <= 750) { rec = "850W Gold"; recommendedPsuWattage = 850; maxCapacity = 850; }
+                else if (targetWattage <= 900) { rec = "1000W Platinum"; recommendedPsuWattage = 1000; maxCapacity = 1000; }
+                else { rec = "1200W+ Titanium"; recommendedPsuWattage = 1200; maxCapacity = 1200; }
+            }
+
+            document.getElementById("psu-recommendation").innerText = rec;
+            
+            // Animação e cor da barra de energia
+            const powerBar = document.getElementById("tdp-progress-bar");
+            const loadPercentage = Math.min((tdp / maxCapacity) * 100, 100);
+            powerBar.style.width = `${loadPercentage}%`;
+            
+            // Muda cor se a carga nominal bater acima de 80% da fonte recomendada
+            if(tdp > (recommendedPsuWattage * 0.8) && tdp > 0) {
+                powerBar.className = "h-full bg-gradient-to-r from-orange-500 to-rose-600 transition-all duration-700 ease-out";
+            } else {
+                powerBar.className = "h-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-all duration-700 ease-out shadow-[0_0_10px_rgba(16,185,129,0.5)]";
+            }
+
+            // Injetar os "ticks" (marcadores de % de carga) programaticamente
+            const powerContainer = powerBar.parentElement;
+            // Limpa ticks velhos, mantendo a barra
+            Array.from(powerContainer.children).forEach(child => { if(child.id !== 'tdp-progress-bar') child.remove(); });
+            
+            if (tdp > 0) {
+                // 50% Tick (Optimal efficiency)
+                powerContainer.insertAdjacentHTML('beforeend', `<div class="absolute top-0 bottom-0 w-px bg-white/40 left-[50%]" title="50% Load (Pico de Eficiência)"></div>`);
+                // 80% Tick (Warning threshold)
+                powerContainer.insertAdjacentHTML('beforeend', `<div class="absolute top-0 bottom-0 w-px bg-rose-500/60 left-[80%]" title="80% Load (Limite Recomendado)"></div>`);
+            }
+
+            // --- SPRINT 16: MODAL RENDERING (SIDE-BY-SIDE DIFF LOGIC) ---
+            const mCont = document.getElementById("modal-list-container");
+            if (state.modalOpen && mCont) {
+                const dbName = COMP_CONFIG[state.modalOpen].db;
+                const srch = state.filters.search;
+                mCont.innerHTML = "";
+                
+                const filteredItems = HARDWARE_DATABASE[dbName].filter(i => i.name.toLowerCase().includes(srch));
+                
+                if(filteredItems.length === 0) {
+                    mCont.innerHTML = `<p class="text-xs text-slate-500 text-center py-4">Nenhum item encontrado.</p>`;
+                }
+
+                filteredItems.forEach(item => {
+                    const isSel = item.id === state.selections[state.modalOpen];
+                    let extra = "";
+                    
+                    if(state.modalOpen === 'gpu') extra = `<span class="text-[9px] text-slate-400 block"><i class="fa-solid fa-ruler-horizontal mr-1"></i>${item.length}mm</span>`;
+                    if(state.modalOpen === 'case') extra = `<span class="text-[9px] text-slate-400 block"><i class="fa-solid fa-ruler-combined mr-1"></i>GPU Max: ${item.maxGpuLength}mm</span>`;
+                    if(state.modalOpen === 'monitor') extra = `<span class="text-[9px] font-bold text-indigo-400 block"><i class="fa-solid fa-desktop mr-1"></i>${item.res} | ${item.hz}Hz</span>`;
+                    
+                    let modalStoreColor = "text-blue-400 border-blue-500/30";
+                    if(item.store === "Kabum") modalStoreColor = "text-orange-400 border-orange-500/30";
+                    if(item.store === "Pichau") modalStoreColor = "text-rose-400 border-rose-500/30";
+                    if(item.store === "Terabyte") modalStoreColor = "text-emerald-400 border-emerald-500/30";
+
+                    const brandInitials = item.brand ? item.brand.substring(0,2).toUpperCase() : 'HW';
+                    const mImgUrl = 'https://placehold.co/60x60/0C101B/6366F1?text=' + encodeURIComponent(brandInitials);
+
+                    // --- SPRINT 16: DIFFERENCE CALCULATIONS ---
+                    let diffHtml = "";
+                    if (currentItemInModalContext && currentItemInModalContext.id !== item.id) {
+                        // Diff Preço
+                        const priceDiff = item.price - currentItemInModalContext.price;
+                        const priceDiffClass = priceDiff > 0 ? 'text-rose-400' : 'text-emerald-400';
+                        const priceDiffSymbol = priceDiff > 0 ? '+' : ''; // negativo vem nativo no numero
+                        
+                        // Diff Score
+                        let scoreDiffHtml = "";
+                        if (item.score !== undefined && currentItemInModalContext.score !== undefined) {
+                             const scoreDiff = item.score - currentItemInModalContext.score;
+                             const scoreDiffClass = scoreDiff > 0 ? 'text-emerald-400' : 'text-rose-400';
+                             const scoreDiffSymbol = scoreDiff > 0 ? '+' : '';
+                             // Mostra diff de score apenas se não for zero
+                             if(scoreDiff !== 0) {
+                                scoreDiffHtml = `<div class="${scoreDiffClass} flex items-center justify-end gap-1"><i class="fa-solid fa-bolt"></i>${scoreDiffSymbol}${scoreDiff} Pts</div>`;
+                             } else {
+                                scoreDiffHtml = `<div class="text-slate-500 flex items-center justify-end gap-1"><i class="fa-solid fa-equals text-[8px]"></i> Score</div>`;
+                             }
+                        }
+
+                        diffHtml = `
+                            <div class="flex flex-col items-end text-[9px] font-bold mt-1 text-right min-w-[70px]">
+                                ${scoreDiffHtml}
+                                <div class="${priceDiffClass}">${priceDiffSymbol}${formatMoney(priceDiff)}</div>
+                            </div>
+                        `;
+                    } else if (isSel) {
+                        diffHtml = `<div class="text-[10px] font-black text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/30 mt-1 uppercase tracking-widest flex items-center gap-1"><i class="fa-solid fa-check"></i> Selecionado</div>`;
+                    }
+
+                    // Render List Item
+                    mCont.innerHTML += `
+                        <div onclick="selectItem('${state.modalOpen}', '${item.id}')" class="p-3 rounded-xl border ${isSel ? 'border-indigo-500 bg-indigo-950/40 shadow-[inset_0_0_20px_rgba(79,70,229,0.15)]' : 'border-slate-800/60 bg-slate-900/50 hover:bg-slate-800 hover:border-slate-600'} cursor-pointer flex justify-between items-center group transition-all duration-200">
+                            <div class="flex items-center gap-3.5 flex-1 min-w-0">
+                                <div class="w-11 h-11 rounded-lg border border-slate-700/80 flex-shrink-0 bg-slate-950 overflow-hidden shadow-sm group-hover:border-indigo-500/40 transition-colors hidden sm:block">
+                                     <img src="${mImgUrl}" class="w-full h-full object-cover opacity-70 group-hover:opacity-100 group-hover:scale-105 transition-all">
+                                </div>
+                                <div class="flex flex-col min-w-0">
+                                    <span class="text-xs font-bold text-slate-200 group-hover:text-white transition-colors block mb-0.5 truncate">${item.name}</span>
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <span class="text-[8px] font-bold ${modalStoreColor} px-1.5 rounded border uppercase"><i class="fa-solid fa-store mr-0.5"></i> ${item.store}</span>
+                                        ${item.score ? `<span class="text-[8px] font-mono text-slate-500 bg-slate-950 px-1.5 rounded border border-slate-800 shadow-inner">Score: ${item.score}</span>` : ''}
+                                        ${extra ? `<div class="w-px h-2.5 bg-slate-700 hidden sm:block"></div> ${extra}` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="flex flex-col items-end justify-center ml-2 flex-shrink-0">
+                                <span class="text-sm font-black text-white group-hover:text-emerald-400 transition-colors drop-shadow-md">${formatMoney(item.price)}</span>
+                                ${diffHtml}
+                            </div>
+                        </div>`;
+                });
+            }
+        });
+
+        // Initialize App
+        window.onload = async () => {
+            // SPRINT 17: Sincroniza com a nuvem antes de renderizar a interface
+            if (window.syncCloudDatabase) {
+                HARDWARE_DATABASE = await window.syncCloudDatabase(LOCAL_FALLBACK_DATABASE);
+            } else {
+                HARDWARE_DATABASE = LOCAL_FALLBACK_DATABASE;
+                document.getElementById('cloud-sync-overlay').classList.add('hidden');
+            }
+
+            parseURLBuild(); // Check for share link
+            store.notify();  // Trigger first render
+        }
     </script>
 
+    <!-- UI HEADER -->
     <header class="border-b border-slate-800 bg-slate-900/40 backdrop-blur-md sticky top-0 z-40">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
             <div class="flex items-center gap-3">
@@ -156,41 +856,40 @@
                 </div>
                 <div>
                     <h1 class="text-lg font-black tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-400 bg-clip-text text-transparent">CANVA AI LABS</h1>
-                    <p class="text-xs text-indigo-400 font-bold tracking-widest uppercase">Visual Build Engine &bull; Sprint 15</p>
+                    <p class="text-xs text-indigo-400 font-bold tracking-widest uppercase">Visual Build Engine &bull; Sprint 16</p>
                 </div>
             </div>
             <div class="flex items-center gap-3">
-                <!-- SPRINT 14: Botão de Compartilhamento -->
-                <button onclick="copyShareLink()" class="text-[11px] bg-indigo-500/10 hover:bg-indigo-500 hover:text-white text-indigo-400 font-bold px-4 py-2 rounded-xl border border-indigo-500/30 flex items-center gap-2 transition active:scale-95 group shadow-lg shadow-indigo-500/10">
+                <button onclick="copyShareLink()" class="hidden md:flex text-[11px] bg-indigo-500/10 hover:bg-indigo-500 hover:text-white text-indigo-400 font-bold px-4 py-2 rounded-xl border border-indigo-500/30 items-center gap-2 transition active:scale-95 group shadow-lg shadow-indigo-500/10">
                     <i class="fa-solid fa-link group-hover:rotate-45 transition-transform"></i> Compartilhar Link
                 </button>
-                <button onclick="clearCurrentBuild()" class="text-[11px] bg-red-500/10 hover:bg-red-500 hover:text-white text-red-400 font-bold px-3.5 py-2 rounded-xl border border-red-500/30 flex items-center gap-1.5 transition active:scale-95 group">
-                    <i class="fa-solid fa-trash-can group-hover:animate-bounce"></i> Limpar Setup
+                <button onclick="clearCurrentBuild()" class="text-[11px] bg-red-500/10 hover:bg-red-500 hover:text-white text-red-400 font-bold px-3.5 py-2 rounded-xl border border-red-500/30 flex items-center gap-1.5 transition active:scale-95 group" title="Limpar todas as seleções">
+                    <i class="fa-solid fa-trash-can group-hover:animate-bounce"></i> <span class="hidden sm:inline">Limpar</span>
                 </button>
             </div>
         </div>
     </header>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 flex-1 flex flex-col md:flex-row gap-8 relative">
-        <div class="flex-1 space-y-6 md:w-2/3">
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 flex-1 flex flex-col lg:flex-row gap-8 relative">
+        <!-- LEFT COLUMN (BUILDER & AI) -->
+        <div class="flex-1 space-y-6 lg:w-2/3">
             
+            <!-- AI Copilot Panel -->
             <div class="bg-gradient-to-r from-indigo-950/30 via-slate-900/20 to-slate-900/10 rounded-2xl p-6 border border-indigo-500/20 relative overflow-hidden">
-                <!-- Efeito visual de fundo da IA -->
                 <div class="absolute -right-20 -top-20 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
                 
                 <div class="flex items-center justify-between mb-4 relative z-10">
                     <h2 class="text-xl md:text-2xl font-extrabold text-white flex items-center gap-2">
                         <i class="fa-solid fa-sparkles text-indigo-400"></i> AI Copilot
                     </h2>
-                    <span class="px-2.5 py-1 rounded-md bg-indigo-500/20 text-indigo-300 text-[9px] font-black uppercase tracking-widest border border-indigo-500/30">Gemini 2026 Engine</span>
+                    <span class="px-2.5 py-1 rounded-md bg-indigo-500/20 text-indigo-300 text-[9px] font-black uppercase tracking-widest border border-indigo-500/30">Gemini 2026</span>
                 </div>
                 
-                <!-- AI Prompt Input -->
                 <div class="relative flex items-center w-full mb-6 z-10 group">
                     <div class="absolute left-4 text-indigo-500/70 group-focus-within:text-indigo-400 transition-colors text-lg">
                         <i class="fa-solid fa-wand-magic-sparkles"></i>
                     </div>
-                    <input type="text" id="ai-prompt-input" placeholder="O que você quer fazer com o PC? (Ex: Jogar GTA 6 em 4K, Render 3D, Estudar...)" class="w-full bg-slate-950/80 text-white text-sm rounded-xl pl-12 pr-24 py-4 border border-slate-700/80 focus:outline-none focus:border-indigo-500 transition-all shadow-inner placeholder-slate-500" onkeydown="if(event.key === 'Enter') handleAIQuery()">
+                    <input type="text" id="ai-prompt-input" placeholder="Ex: Quero jogar GTA 6 em 4K, Render 3D, Estudar..." class="w-full bg-slate-950/80 text-white text-sm rounded-xl pl-12 pr-32 py-4 border border-slate-700/80 focus:outline-none focus:border-indigo-500 transition-all shadow-inner placeholder-slate-500" onkeydown="if(event.key === 'Enter') handleAIQuery()">
                     <button onclick="handleAIQuery()" id="ai-submit-btn" class="absolute right-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-all shadow-lg shadow-indigo-500/30 flex items-center gap-2">
                         Gerar Magia
                     </button>
@@ -198,31 +897,32 @@
 
                 <div class="flex items-center gap-3 mb-4 z-10 relative opacity-60">
                     <div class="h-px bg-slate-700 flex-1"></div>
-                    <span class="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Ou escolha um preset manual</span>
+                    <span class="text-[9px] text-slate-400 font-bold uppercase tracking-widest text-center">Ou escolha um preset</span>
                     <div class="h-px bg-slate-700 flex-1"></div>
                 </div>
 
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-3 relative z-10">
-                    <button onclick="handlePreset('entrada')" class="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-indigo-500/40 text-left group transition-all">
-                        <span class="text-[10px] font-semibold text-slate-400 block group-hover:text-slate-300">Custo-Benefício</span>
+                    <button onclick="handlePreset('entrada')" class="p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-indigo-500/40 text-left group transition-all">
+                        <span class="text-[9px] font-semibold text-slate-400 block group-hover:text-slate-300">Custo-Benefício</span>
                         <span class="text-xs font-extrabold text-white">PC Entrada</span>
                     </button>
-                    <button onclick="handlePreset('intermediario')" class="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-indigo-500/40 text-left group transition-all">
-                        <span class="text-[10px] font-semibold text-slate-400 block group-hover:text-slate-300">Sweet Spot</span>
+                    <button onclick="handlePreset('intermediario')" class="p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-indigo-500/40 text-left group transition-all">
+                        <span class="text-[9px] font-semibold text-slate-400 block group-hover:text-slate-300">Sweet Spot</span>
                         <span class="text-xs font-extrabold text-white">PC Intermediário</span>
                     </button>
-                    <button onclick="handlePreset('highend')" class="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-indigo-500/40 text-left group transition-all">
-                        <span class="text-[10px] font-semibold text-slate-400 block group-hover:text-slate-300">Alta Performance</span>
+                    <button onclick="handlePreset('highend')" class="p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-indigo-500/40 text-left group transition-all">
+                        <span class="text-[9px] font-semibold text-slate-400 block group-hover:text-slate-300">Alta Performance</span>
                         <span class="text-xs font-extrabold text-white">PC High-End</span>
                     </button>
-                    <button onclick="handlePreset('ultra')" class="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-indigo-500/40 text-left group transition-all">
-                        <span class="text-[10px] font-semibold text-slate-400 block group-hover:text-slate-300">Extremo</span>
+                    <button onclick="handlePreset('ultra')" class="p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-indigo-500/40 text-left group transition-all">
+                        <span class="text-[9px] font-semibold text-slate-400 block group-hover:text-slate-300">Extremo</span>
                         <span class="text-xs font-extrabold text-white">PC Ultra</span>
                     </button>
                 </div>
             </div>
 
-            <div class="glass-card rounded-2xl p-6 relative overflow-hidden flex flex-col md:flex-row items-center gap-6">
+            <!-- HUD Visual Builder -->
+            <div class="glass-card rounded-2xl p-6 relative overflow-hidden flex flex-col md:flex-row items-center gap-6 hidden sm:flex">
                 <div class="absolute -left-12 -top-12 w-48 h-48 bg-indigo-500/5 rounded-full blur-3xl"></div>
                 <div class="w-full md:w-2/5 flex justify-center bg-slate-950/80 p-4 rounded-xl border border-slate-800/80 relative">
                     <div class="absolute top-2 left-2 flex items-center gap-1.5">
@@ -230,60 +930,71 @@
                         <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">HUD Interativa</span>
                     </div>
                     
+                    <!-- SVG Interactive Circuit -->
                     <svg id="visual-hud-svg" class="w-48 h-48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <rect onclick="openModal('mobo')" x="5" y="5" width="90" height="90" rx="4" fill="#0C101B" stroke="#1E293B" stroke-width="1.5" class="interactive-socket"/>
-                        <path id="circuit-cpu" class="data-circuit" d="M25 50 H45 V35" stroke="#4F46E5" stroke-width="0.8" stroke-linecap="round"/>
-                        <path id="circuit-gpu" class="data-circuit" d="M45 50 H65 V70" stroke="#10B981" stroke-width="0.8" stroke-linecap="round"/>
                         
-                        <!-- Slots Clicáveis com suporte a Logos HTML via foreignObject -->
+                        <path id="circuit-cpu" class="data-circuit circuit-offline" d="M25 50 H45 V35" stroke="#475569" stroke-width="0.8" stroke-linecap="round"/>
+                        <path id="circuit-gpu" class="data-circuit circuit-offline" d="M45 50 H65 V70" stroke="#475569" stroke-width="0.8" stroke-linecap="round"/>
+                        
                         <g onclick="openModal('cpu')" class="interactive-socket cursor-pointer">
                             <rect x="38" y="38" width="24" height="24" rx="2" fill="#151E33" stroke="#4F46E5" stroke-width="1.5"/>
                             <foreignObject x="38" y="38" width="24" height="24" class="pointer-events-none">
-                                <div xmlns="http://www.w3.org/1999/xhtml" id="hud-logo-cpu" class="w-full h-full flex items-center justify-center text-[7px] font-black opacity-60"></div>
+                                <div xmlns="http://www.w3.org/1999/xhtml" id="hud-logo-cpu" class="w-full h-full flex items-center justify-center text-[7px] font-black opacity-60 text-slate-300"></div>
                             </foreignObject>
                         </g>
                         
                         <g onclick="openModal('ram')" class="interactive-socket cursor-pointer">
                             <rect x="68" y="30" width="10" height="30" rx="1" fill="#151E33" stroke="#475569" stroke-width="0.5"/>
                             <foreignObject x="68" y="30" width="10" height="30" class="pointer-events-none">
-                                <div xmlns="http://www.w3.org/1999/xhtml" id="hud-logo-ram" class="w-full h-full flex items-center justify-center text-[5px] font-black opacity-60 rotate-90 text-slate-400">RAM</div>
+                                <div xmlns="http://www.w3.org/1999/xhtml" class="w-full h-full flex items-center justify-center text-[5px] font-black opacity-60 rotate-90 text-slate-400">RAM</div>
                             </foreignObject>
                         </g>
                         
                         <g onclick="openModal('gpu')" class="interactive-socket cursor-pointer">
                             <rect x="15" y="68" width="50" height="12" rx="1" fill="#151E33" stroke="#475569" stroke-width="1"/>
                             <foreignObject x="15" y="68" width="50" height="12" class="pointer-events-none">
-                                <div xmlns="http://www.w3.org/1999/xhtml" id="hud-logo-gpu" class="w-full h-full flex items-center justify-center text-[7px] font-black opacity-80 tracking-widest"></div>
+                                <div xmlns="http://www.w3.org/1999/xhtml" id="hud-logo-gpu" class="w-full h-full flex items-center justify-center text-[7px] font-black opacity-80 tracking-widest text-slate-300"></div>
                             </foreignObject>
                         </g>
                         
-                        <circle id="visual-fan" cx="50" cy="50" r="14" fill="none" stroke="#4F46E5" stroke-width="1" stroke-dasharray="3 3" class="animate-fan pointer-events-none"/>
+                        <circle cx="50" cy="50" r="14" fill="none" stroke="#4F46E5" stroke-width="1" stroke-dasharray="3 3" class="animate-fan pointer-events-none opacity-50"/>
                     </svg>
                 </div>
                 <div class="flex-1 space-y-3">
                     <h3 class="text-base font-extrabold text-white"><i class="fa-solid fa-microchip text-indigo-400"></i> Case Builder Visual</h3>
-                    <p class="text-slate-400 text-[11px] leading-relaxed">Clique diretamente no circuito (CPU, GPU, RAM) para abrir o catálogo. Os logos das fabricantes aparecerão em tempo real.</p>
+                    <p class="text-slate-400 text-[11px] leading-relaxed">Clique no circuito (CPU, GPU, RAM) para abrir o catálogo. Os logos físicos e trilhas de dados reagirão à sua seleção em tempo real.</p>
                 </div>
             </div>
 
-            <div class="space-y-4" id="cards-container"></div>
+            <!-- Hardware Cards List -->
+            <div class="space-y-4" id="cards-container">
+                <!-- Rendered via JS -->
+            </div>
         </div>
 
-        <div class="md:w-1/3 flex flex-col gap-6 relative">
-            <div class="sticky top-24 flex flex-col gap-6">
+        <!-- RIGHT COLUMN (STICKY CART & ANALYSIS) -->
+        <div class="lg:w-1/3 flex flex-col gap-6 relative">
+            <div class="lg:sticky lg:top-24 flex flex-col gap-6">
                 
-                <!-- Resumo e Preço -->
+                <!-- Mini Cart Summary -->
                 <div class="glass-card rounded-2xl p-5 bg-indigo-950/20 border-indigo-500/30">
-                    <h4 class="text-[10px] font-bold uppercase text-indigo-400 tracking-wider mb-3"><i class="fa-solid fa-box-open"></i> Resumo do Setup</h4>
-                    <div class="space-y-2.5 mb-4" id="sticky-summary-list"></div>
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-[10px] font-bold uppercase text-indigo-400 tracking-wider"><i class="fa-solid fa-list-check"></i> Resumo do Setup</h4>
+                        <button onclick="copyShareLink()" class="md:hidden text-indigo-400 p-1"><i class="fa-solid fa-share-nodes"></i></button>
+                    </div>
+                    
+                    <div class="space-y-2.5 mb-4" id="sticky-summary-list">
+                        <!-- Rendered via JS -->
+                    </div>
                     <div class="border-t border-slate-800/80 pt-3 flex justify-between items-center">
                         <span class="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Total Estimado</span>
-                        <span id="sticky-price-final" class="text-sm font-black text-emerald-400">R$ 0</span>
+                        <span id="sticky-price-final" class="text-sm md:text-base font-black text-emerald-400">R$ 0</span>
                     </div>
                 </div>
 
-                <!-- Sprint 9: Benchmarks (FPS e Workstation) -->
-                <div class="glass-card rounded-2xl p-5 bg-slate-900/40 border-emerald-500/20">
+                <!-- Benchmarks Module -->
+                <div class="glass-card rounded-2xl p-5 bg-slate-900/40 border-emerald-500/20 hidden md:block">
                      <h4 class="text-[10px] font-bold uppercase text-emerald-400 tracking-wider mb-3"><i class="fa-solid fa-gauge-high"></i> Performance Estimada</h4>
                      <div class="space-y-3" id="benchmark-panel">
                         <div class="flex justify-between items-end border-b border-slate-800 pb-2">
@@ -310,511 +1021,112 @@
                      </div>
                 </div>
 
-                <!-- TDP Power -->
+                <!-- Power Meter (TDP) -->
                 <div class="glass-card rounded-2xl p-5 bg-slate-900/40 border border-amber-500/20">
                     <h4 class="text-[10px] font-bold uppercase text-amber-400 mb-2"><i class="fa-solid fa-bolt"></i> Consumo Energético</h4>
                     <div class="flex justify-between items-end mb-2">
                         <span id="tdp-total-value" class="text-lg font-black text-white">0 W</span>
-                        <span id="psu-recommendation" class="text-[10px] font-extrabold text-amber-400 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/20">--</span>
+                        <span id="psu-recommendation" class="text-[10px] font-extrabold text-amber-400 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/20" title="Fonte de Alimentação Recomendada">--</span>
                     </div>
-                    <div class="h-1 bg-slate-800 rounded-full overflow-hidden"><div id="tdp-progress-bar" class="h-full bg-gradient-to-r from-amber-400 to-orange-500" style="width: 0%"></div></div>
+                    <!-- Progressive Power Bar -->
+                    <div class="h-1.5 bg-slate-800 rounded-full overflow-hidden relative" title="Uso da Capacidade da Fonte">
+                        <div id="tdp-progress-bar" class="h-full bg-slate-600 w-0 transition-all duration-500"></div>
+                    </div>
                 </div>
 
-                <!-- Diagnóstico (Gargalo e Físicas) -->
-                <div class="glass-card rounded-2xl p-5 relative overflow-hidden">
+                <!-- Smart Diagnostics -->
+                <div class="glass-card rounded-2xl p-4 relative overflow-hidden">
                     <div id="stability-indicator" class="p-3 rounded-xl border flex flex-col gap-1 transition-all">
                         <span id="indicator-badge" class="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded self-start"></span>
                         <p id="indicator-text" class="text-[10px] leading-relaxed text-slate-300"></p>
                     </div>
                 </div>
                 
-                <!-- SPRINT 11: Módulo de Checkout / Monetização de Afiliados -->
-                <button onclick="checkoutCart()" class="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-teal-500 hover:to-teal-400 text-white font-extrabold text-xs tracking-wider uppercase py-3.5 rounded-xl shadow-lg shadow-emerald-500/30 flex items-center justify-center gap-2 transition transform hover:scale-[1.02] animate-pulse hover:animate-none">
-                    <i class="fa-solid fa-cart-shopping text-lg"></i> Comprar Setup Completo
+                <!-- Action Buttons -->
+                <button onclick="checkoutCart()" class="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-teal-500 hover:to-teal-400 text-white font-extrabold text-xs tracking-wider uppercase py-3.5 rounded-xl shadow-lg shadow-emerald-500/30 flex items-center justify-center gap-2 transition transform hover:scale-[1.02] active:scale-95 group">
+                    <i class="fa-solid fa-cart-shopping text-lg group-hover:animate-bounce"></i> Comprar Setup Completo
                 </button>
 
-                <button onclick="exportToPDF()" class="w-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white font-extrabold text-xs tracking-wider uppercase py-3 rounded-xl border border-slate-700 hover:border-slate-500 flex items-center justify-center gap-2 transition">
+                <button onclick="exportToPDF()" class="w-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white font-extrabold text-[11px] tracking-wider uppercase py-3 rounded-xl border border-slate-700 hover:border-slate-500 flex items-center justify-center gap-2 transition active:scale-95">
                     <i class="fa-solid fa-file-pdf text-rose-500"></i> Baixar Orçamento (PDF)
                 </button>
             </div>
         </div>
     </main>
 
-    <div id="swap-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center opacity-0 pointer-events-none transition-all duration-300">
-        <div class="glass-card w-full max-w-xl rounded-2xl overflow-hidden shadow-2xl m-4 transform scale-95 transition-all duration-300" id="modal-content">
-            <div class="p-5 border-b border-slate-800 bg-slate-900/30 flex items-center justify-between">
-                <h3 class="font-extrabold text-base text-white" id="modal-category-name">Selecionar</h3>
-                <button onclick="closeModal()" class="w-8 h-8 rounded-lg bg-slate-800 text-slate-300"><i class="fa-solid fa-xmark"></i></button>
+    <!-- UI MODAL: Selection & Comparison -->
+    <div id="swap-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center opacity-0 pointer-events-none transition-all duration-300 p-4">
+        <div class="glass-card w-full max-w-xl rounded-2xl overflow-hidden shadow-2xl transform scale-95 transition-all duration-300 flex flex-col max-h-[90vh]" id="modal-content">
+            
+            <!-- Modal Header -->
+            <div class="p-4 border-b border-slate-800 bg-slate-900/30 flex items-center justify-between shrink-0">
+                <h3 class="font-extrabold text-base text-white" id="modal-category-name">Selecionar Componente</h3>
+                <button onclick="closeModal()" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
             </div>
-            <div class="p-4 bg-slate-900/20 border-b border-slate-800">
-                <input oninput="updateFilters(this.value)" type="text" placeholder="Buscar peça..." class="w-full bg-slate-950/60 text-white text-xs rounded-xl px-4 py-2 border border-slate-800 focus:outline-none focus:border-indigo-500">
+            
+            <!-- SPRINT 16: Sticky Top Panel (Current Selection Context) -->
+            <div id="modal-current-item-panel" class="hidden border-b border-slate-800/80 bg-indigo-950/20 p-3 shrink-0">
+                <p class="text-[9px] uppercase tracking-widest text-indigo-400 font-bold mb-1.5 flex items-center gap-1"><i class="fa-solid fa-thumbtack"></i> Sua Seleção Atual</p>
+                <div class="flex justify-between items-center bg-slate-900/60 p-2.5 rounded-lg border border-indigo-500/30 shadow-inner">
+                    <div class="flex flex-col min-w-0">
+                        <span id="modal-current-name" class="text-xs font-bold text-white truncate"></span>
+                        <span id="modal-current-score" class="text-[9px] text-slate-400 font-mono mt-0.5"></span>
+                    </div>
+                    <span id="modal-current-price" class="text-xs font-black text-emerald-400 shrink-0 ml-3"></span>
+                </div>
             </div>
-            <div class="max-h-80 overflow-y-auto p-4 space-y-2.5" id="modal-list-container"></div>
+
+            <!-- Modal Search -->
+            <div class="p-3 bg-slate-900/20 border-b border-slate-800 shrink-0">
+                <div class="relative">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                    <input oninput="updateFilters(this.value)" type="text" placeholder="Buscar modelo, marca, etc..." class="w-full bg-slate-950/80 text-white text-xs rounded-xl pl-9 pr-4 py-2.5 border border-slate-700/80 focus:outline-none focus:border-indigo-500 transition-colors shadow-inner placeholder-slate-500">
+                </div>
+            </div>
+            
+            <!-- Modal List Content -->
+            <div class="overflow-y-auto p-3 space-y-2.5 custom-scrollbar flex-1" id="modal-list-container">
+                <!-- Rendered via JS -->
+            </div>
         </div>
     </div>
 
-    <!-- Hidden PDF -->
+    <!-- INVISIBLE PDF TEMPLATE (Sprint 8) -->
     <div id="pdf-template-container">
         <div class="pdf-header">
-            <div><h1 style="font-size: 24px; font-weight: 800; margin:0;">ORÇAMENTO DE HARDWARE</h1><p id="pdf-date" style="font-size:12px; color:#64748B;">--</p></div>
+            <div>
+                <h1 style="font-size: 24px; font-weight: 800; margin:0; color: #0F172A;">ORÇAMENTO DE HARDWARE</h1>
+                <p style="font-size: 10px; color: #64748B; font-weight: bold;">GERADO POR CANVA AI LABS &bull; BUILD ENGINE 2026</p>
+            </div>
+            <div style="text-align: right;">
+                <p id="pdf-date" style="font-size:12px; color:#64748B; margin: 0;"></p>
+                <p style="font-size: 10px; color: #94A3B8; margin-top: 4px;">Ref: Web-Simulation-V16</p>
+            </div>
         </div>
+        
         <table class="pdf-table">
-            <thead><tr><th>Peça</th><th>Modelo</th><th>Preço</th></tr></thead>
-            <tbody id="pdf-body"></tbody>
-            <tfoot><tr><td colspan="2" style="text-align:right; font-weight:bold;">TOTAL</td><td id="pdf-total" style="font-weight:bold; color:#10B981;">--</td></tr></tfoot>
+            <thead>
+                <tr>
+                    <th style="width: 25%;">Categoria</th>
+                    <th style="width: 50%;">Modelo Especificado</th>
+                    <th style="width: 25%; text-align: right;">Menor Preço</th>
+                </tr>
+            </thead>
+            <tbody id="pdf-body">
+                <!-- Injetado via JS -->
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td colspan="2" style="text-align:right; font-weight:900; font-size: 16px; padding-top: 20px;">INVESTIMENTO TOTAL ESTIMADO</td>
+                    <td id="pdf-total" style="font-weight:900; color:#10B981; font-size: 18px; text-align: right; padding-top: 20px;">--</td>
+                </tr>
+            </tfoot>
         </table>
+        
+        <div style="margin-top: 40px; padding: 15px; background-color: #F8FAFC; border-left: 4px solid #4F46E5; font-size: 11px; color: #475569;">
+            <p style="margin: 0;"><strong>Aviso Legal:</strong> Este é um documento gerado automaticamente por simulação. Os preços e a disponibilidade das peças estão sujeitos à variação do mercado. Recomendamos verificar os links oficiais nas lojas Kabum, Pichau e Terabyte antes da finalização da compra. Verifique também restrições de montagem, uso de pastas térmicas e medidas precisas do gabinete.</p>
+        </div>
     </div>
 
-    <script>
-        const formatMoney = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 0 });
-        
-        const COMP_CONFIG = {
-            cpu: { label: "Processador", db: "cpus", icon: '<i class="fa-solid fa-microchip"></i>' },
-            gpu: { label: "Placa de Vídeo", db: "gpus", icon: '<i class="fa-solid fa-fan"></i>' },
-            mobo: { label: "Placa Mãe", db: "mobos", icon: '<i class="fa-solid fa-chess-board"></i>' },
-            ram: { label: "Memória RAM", db: "rams", icon: '<i class="fa-solid fa-memory"></i>' },
-            ssd: { label: "SSD", db: "ssds", icon: '<i class="fa-solid fa-hard-drive"></i>' },
-            case: { label: "Gabinete", db: "cases", icon: '<i class="fa-solid fa-box"></i>' },
-            monitor: { label: "Monitor", db: "monitors", icon: '<i class="fa-solid fa-display"></i>' },
-            keyboard: { label: "Teclado", db: "keyboards", icon: '<i class="fa-solid fa-keyboard"></i>' },
-            mouse: { label: "Mouse", db: "mice", icon: '<i class="fa-solid fa-computer-mouse"></i>' },
-            headset: { label: "Headset", db: "headsets", icon: '<i class="fa-solid fa-headphones"></i>' }
-        };
-
-        const TIER_COLORS = { "God Tier": "text-sky-400 bg-sky-500/10", "High Tier": "text-emerald-400 bg-emerald-500/10", "Decent Tier": "text-yellow-500 bg-yellow-500/10", "Mid Tier": "text-orange-400 bg-orange-500/10", "Low Tier": "text-red-400 bg-red-500/10" };
-
-        function getDetails(selections) {
-            let res = {};
-            for(let key in COMP_CONFIG) { res[key] = HARDWARE_DATABASE[COMP_CONFIG[key].db].find(x => x.id === selections[key]) || null; }
-            return res;
-        }
-
-        function showToast(msg, isErr=false) {
-            const t = document.createElement("div");
-            t.className = `fixed bottom-5 right-5 z-50 p-4 rounded-xl border text-xs font-bold transition-all transform translate-y-10 opacity-0 ${isErr ? 'bg-red-950 border-red-500 text-red-400' : 'bg-indigo-950 border-indigo-500 text-indigo-400'}`;
-            t.innerText = msg; document.body.appendChild(t);
-            setTimeout(() => t.classList.remove('translate-y-10', 'opacity-0'), 50);
-            setTimeout(() => { t.classList.add('translate-y-10', 'opacity-0'); setTimeout(()=>t.remove(), 300); }, 3000);
-        }
-
-        function clearCurrentBuild() { store.setState({ selections: { ...EMPTY_SETUP } }); showToast("Setup apagado.", true); }
-        function handlePreset(key) { store.setState({ selections: PRESETS[key] }); showToast("Preset carregado!"); }
-        
-        function handleAIQuery() {
-            const inputEl = document.getElementById("ai-prompt-input");
-            const btnEl = document.getElementById("ai-submit-btn");
-            const query = inputEl.value.toLowerCase();
-            
-            if(!query.trim()) { 
-                showToast("Por favor, me conte o que você quer fazer com o PC!", true); 
-                inputEl.focus();
-                return; 
-            }
-
-            // Estado de Loading Visual
-            btnEl.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Processando...';
-            btnEl.classList.add("opacity-80", "cursor-wait");
-            inputEl.disabled = true;
-
-            // Simula o tempo de resposta da API (1.5 segundos para "pensar")
-            setTimeout(() => {
-                let chosenPreset = "intermediario"; // Opção Segura Padrão
-                let aiMessage = "Equilibrei um setup com ótimo custo-benefício para suas necessidades gerais!";
-
-                // Extração rudimentar de intenções por Palavras-Chave
-                if (query.includes("4k") || query.includes("gta") || query.includes("cyberpunk") || query.includes("pesado") || query.includes("render") || query.includes("stream") || query.includes("high")) {
-                    chosenPreset = "highend";
-                    aiMessage = "Foco em Alta Performance! Esse setup vai rodar jogos em 4K e renderizações pesadas com folga.";
-                }
-                if (query.includes("ultra") || query.includes("melhor") || query.includes("ostentação") || query.includes("limite") || query.includes("5090") || query.includes("8k") || query.includes("nasa")) {
-                    chosenPreset = "ultra";
-                    aiMessage = "Modo Ostentação ativado! 🔥 Separei os hardwares mais poderosos do planeta para você.";
-                }
-                if (query.includes("barato") || query.includes("entrada") || query.includes("lol") || query.includes("cs") || query.includes("valorant") || query.includes("escritorio") || query.includes("estudar") || query.includes("simples")) {
-                    chosenPreset = "entrada";
-                    aiMessage = "Foco em Economia! Setup focado em e-Sports e tarefas diárias sem pesar no bolso.";
-                }
-
-                // Aplica o setup e reseta a UI
-                store.setState({ selections: PRESETS[chosenPreset] });
-                
-                btnEl.innerHTML = 'Gerar Magia';
-                btnEl.classList.remove("opacity-80", "cursor-wait");
-                inputEl.disabled = false;
-                
-                // Toast especial do AI Copilot
-                showToast(`🤖 Gemini: ${aiMessage}`);
-            }, 1500); 
-        }
-
-        function openModal(cat) {
-            store.setState({ modalOpen: cat });
-            document.getElementById("swap-modal").classList.remove("opacity-0", "pointer-events-none");
-            document.getElementById("modal-content").classList.remove("scale-95");
-            document.getElementById("modal-category-name").innerText = `Escolher ${COMP_CONFIG[cat].label}`;
-        }
-        function closeModal() {
-            document.getElementById("swap-modal").classList.add("opacity-0", "pointer-events-none");
-            document.getElementById("modal-content").classList.add("scale-95");
-            store.setState({ modalOpen: null, filters: { search: "" } });
-        }
-        function updateFilters(val) { store.setState({ filters: { search: val.toLowerCase() } }); }
-        function selectItem(cat, id) { store.setState({ selections: { ...store.getState().selections, [cat]: id } }); closeModal(); }
-
-        // Nova função para remover um item específico do estado
-        function removeItem(cat, event) {
-            if (event) {
-                event.stopPropagation(); // Evita que o clique se propague para o card (e abra o modal)
-            }
-            store.setState({ selections: { ...store.getState().selections, [cat]: null } });
-            showToast(`${COMP_CONFIG[cat].label} removido.`, true);
-        }
-
-        // Módulo Sprint 9: Benchmarks
-        function renderBenchmarks(details) {
-            const bEsports = document.getElementById("bench-esports");
-            const bAaa = document.getElementById("bench-aaa");
-            const bWork = document.getElementById("bench-work");
-            
-            if(!details.cpu || !details.gpu) {
-                bEsports.innerText = "-- FPS"; bAaa.innerText = "-- FPS"; bWork.innerText = "-- Pts";
-                return;
-            }
-            // Algoritmo simplificado de Score
-            let cS = details.cpu.score; let gS = details.gpu.score;
-            bEsports.innerText = `${Math.floor((cS * 7) + (gS * 1.5))} FPS`; // 1080p foca em CPU
-            bAaa.innerText = `${Math.floor((cS * 0.4) + (gS * 1.1))} FPS`; // 4K foca em GPU
-            bWork.innerText = `${Math.floor((cS * 90) + (details.ram ? details.ram.score * 20 : 0))}`;
-        }
-
-        // Módulo Sprint 10: Inteligência e Física (Clearance)
-        function renderDiagnostics(details) {
-            const box = document.getElementById("stability-indicator");
-            const badge = document.getElementById("indicator-badge");
-            const txt = document.getElementById("indicator-text");
-
-            if (!details.cpu || !details.gpu || !details.mobo || !details.ram || !details.case) {
-                box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-slate-900/50 border-slate-800";
-                badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-slate-800 text-slate-400";
-                badge.innerText = "Incompleto"; txt.innerText = "Faltam peças para análise."; return;
-            }
-
-            // Checagem de Clearance Físico (Sprint 10)
-            if (details.gpu.length > details.case.maxGpuLength) {
-                box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-red-500/10 border-red-500/30";
-                badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-red-500/20 text-red-400";
-                badge.innerText = "Incompatibilidade Física (Gabinete)";
-                txt.innerHTML = `A Placa de vídeo tem <b>${details.gpu.length}mm</b>, mas o gabinete suporta no máximo <b>${details.case.maxGpuLength}mm</b>. Não vai caber!`;
-                return;
-            }
-
-            // Checagem de Socket e RAM
-            if (details.cpu.socket !== details.mobo.socket || details.ram.ramGen !== details.mobo.ramGen) {
-                box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-red-500/10 border-red-500/30";
-                badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-red-500/20 text-red-400";
-                badge.innerText = "Incompatibilidade Crítica";
-                txt.innerText = "As peças (Placa mãe, RAM ou CPU) não encaixam.";
-                return;
-            }
-
-            // SPRINT 12: Checagem de Gargalo de Monitor (Tela Limitando a Placa de Vídeo)
-            if (details.monitor && details.gpu && (details.gpu.tier === "God Tier" || details.gpu.tier === "High Tier")) {
-                if (details.monitor.res === "1080p" || details.monitor.hz < 144) {
-                    box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-amber-500/10 border-amber-500/30";
-                    badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-amber-500/20 text-amber-400";
-                    badge.innerText = "Gargalo de Visualização";
-                    txt.innerHTML = `Sua GPU é monstra (<b>${details.gpu.tier}</b>), mas o monitor limita ela a <b>${details.monitor.res} ${details.monitor.hz}Hz</b>. Você está perdendo performance visual!`;
-                    return;
-                }
-            }
-
-            box.className = "p-3 rounded-xl border flex flex-col gap-1 bg-emerald-500/10 border-emerald-500/30";
-            badge.className = "text-[9px] font-extrabold uppercase px-2 py-0.5 rounded self-start bg-emerald-500/20 text-emerald-400";
-            badge.innerText = "Tudo Certo"; txt.innerText = "Compatibilidade física e técnica confirmada. Bom equilíbrio.";
-        }
-
-        // Renderização Principal (UI e HUD com Logos)
-        store.subscribe((state) => {
-            const d = getDetails(state.selections);
-            let total = 0, tdp = 0;
-            
-            document.getElementById("cards-container").innerHTML = "";
-            document.getElementById("sticky-summary-list").innerHTML = "";
-
-            for(let key in COMP_CONFIG) {
-                const conf = COMP_CONFIG[key]; const item = d[key];
-                
-                // Lista Lateral (Atualizada com botão de remoção no Hover)
-                document.getElementById("sticky-summary-list").insertAdjacentHTML('beforeend', `
-                    <div class="flex items-center justify-between group ${!item ? 'opacity-30' : ''}">
-                        <div class="flex items-center gap-2 overflow-hidden">
-                            <div class="text-[10px] text-indigo-400 w-4">${conf.icon}</div>
-                            <span class="text-[10px] text-slate-200 text-truncate-mini">${item ? item.name : 'Vazio'}</span>
-                        </div>
-                        ${item ? `<button onclick="removeItem('${key}')" class="text-slate-500 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-1 focus:opacity-100"><i class="fa-solid fa-xmark text-[10px]"></i></button>` : ''}
-                    </div>
-                `);
-
-                // Cards Centrais
-                if(!item) {
-                    document.getElementById("cards-container").insertAdjacentHTML('beforeend', `
-                        <div onclick="openModal('${key}')" class="glass-card rounded-xl p-4 flex items-center gap-4 cursor-pointer border border-dashed border-slate-700/80 hover:bg-slate-900/40 opacity-50">
-                            <div class="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center text-slate-500 text-lg">${conf.icon}</div>
-                            <div><span class="text-[9px] font-bold text-slate-500 uppercase block">${conf.label}</span><h4 class="text-xs text-slate-400">Selecionar...</h4></div>
-                        </div>`);
-                } else {
-                    total += item.price; tdp += item.tdp || 0;
-                    
-                    // Lógica de cores das lojas e Links (Sprint 13)
-                    let storeColor = "text-blue-400 bg-blue-500/10";
-                    if(item.store === "Kabum") storeColor = "text-orange-400 bg-orange-500/10";
-                    if(item.store === "Pichau") storeColor = "text-red-400 bg-red-500/10";
-                    if(item.store === "Terabyte") storeColor = "text-emerald-400 bg-emerald-500/10";
-
-                    // URL e Imagem simulada dinâmica
-                    const searchUrl = 'https://www.google.com/search?q=' + encodeURIComponent(item.name + ' comprar ' + item.store);
-                    const imgUrl = 'https://placehold.co/80x80/0F1626/6366F1?text=' + encodeURIComponent(item.brand);
-
-                    // SPRINT 15: Lógica simulada de "Deal Analyzer" (Preço em Queda)
-                    // Atribui o selo de oferta para peças High-End/Decent de forma randômica controlada (baseado no tamanho do ID para ser consistente)
-                    const isGreatDeal = (item.id.length % 3 === 0);
-                    const dealBadgeHtml = isGreatDeal ? `<span class="text-[8px] font-black uppercase tracking-widest text-orange-400 bg-orange-500/10 px-2 py-0.5 rounded-full border border-orange-500/20 flex items-center gap-1 animate-pulse"><i class="fa-solid fa-fire"></i> Menor preço em 30d</span>` : '';
-
-                    // Card central (Atualizado com Imagem, Link da Loja e Deal Badge)
-                    document.getElementById("cards-container").insertAdjacentHTML('beforeend', `
-                        <div onclick="openModal('${key}')" class="glass-card rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer border border-slate-800 hover:border-indigo-500/50 group relative overflow-hidden transition-all">
-                            <div class="flex items-center gap-4">
-                                <!-- Imagem Thumbnail -->
-                                <div class="w-14 h-14 rounded-lg bg-slate-900 border border-slate-700 flex-shrink-0 overflow-hidden relative group-hover:border-indigo-500/50 transition-colors hidden sm:block">
-                                    <img src="${imgUrl}" alt="${item.brand}" class="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity">
-                                    <div class="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent flex items-end justify-center pb-0.5">
-                                        <span class="text-[7px] font-black text-slate-400 uppercase tracking-widest">${conf.label.substring(0,3)}</span>
-                                    </div>
-                                </div>
-                                <div>
-                                    <div class="flex items-center gap-2 mb-1">
-                                        <span class="text-[9px] font-bold text-slate-400 uppercase flex items-center gap-1.5">${conf.icon} ${conf.label}</span>
-                                        ${dealBadgeHtml}
-                                    </div>
-                                    <h4 class="text-sm font-bold text-white mb-1.5 leading-tight">${item.name}</h4>
-                                    <div class="flex gap-1.5 items-center flex-wrap">
-                                        <span class="text-[8px] px-1.5 py-0.5 rounded uppercase font-bold ${TIER_COLORS[item.tier] || ''}">${item.tier}</span>
-                                        <span class="text-[8px] px-1.5 py-0.5 rounded uppercase font-bold ${storeColor}"><i class="fa-solid fa-store"></i> ${item.store}</span>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div class="flex items-center justify-between md:justify-end gap-3 mt-2 md:mt-0 border-t md:border-t-0 border-slate-800/50 pt-3 md:pt-0">
-                                <span class="text-base font-black text-emerald-400 mr-2">${formatMoney(item.price)}</span>
-                                <div class="flex gap-2">
-                                    <!-- Botão de Redirecionamento -->
-                                    <a href="${searchUrl}" target="_blank" onclick="event.stopPropagation()" title="Ver produto na loja" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-indigo-600 text-slate-300 hover:text-white text-[10px] font-bold flex items-center gap-1.5 transition-colors border border-slate-700 hover:border-indigo-500 shadow-lg">
-                                        <i class="fa-solid fa-arrow-up-right-from-square"></i> Loja
-                                    </a>
-                                    <!-- Botão de Lixeira -->
-                                    <button onclick="removeItem('${key}', event)" title="Remover item" class="w-8 h-8 rounded-lg bg-slate-800/50 hover:bg-rose-500/20 text-slate-500 hover:text-rose-500 flex items-center justify-center transition-colors border border-transparent hover:border-rose-500/30">
-                                        <i class="fa-solid fa-trash-can text-xs"></i>
-                                    </button>
-                                </div>
-                            </div>
-                        </div>`);
-                }
-            }
-
-            document.getElementById("sticky-price-final").innerText = formatMoney(total);
-            document.getElementById("tdp-total-value").innerText = `${tdp} W`;
-            let rec = tdp === 0 ? "--" : (tdp * 1.5 < 450 ? "500W Bronze" : (tdp * 1.5 < 700 ? "750W Gold" : "1000W+ Platinum"));
-            document.getElementById("psu-recommendation").innerText = rec;
-            document.getElementById("tdp-progress-bar").style.width = `${Math.min((tdp/1000)*100, 100)}%`;
-
-            // SVG HUD LOGOS UPDATE
-            const lCpu = document.getElementById("hud-logo-cpu");
-            const lGpu = document.getElementById("hud-logo-gpu");
-            
-            // Lógica para logos de marca (Texto estilizado / Ícones FontAwesome)
-            if(d.cpu) {
-                lCpu.innerHTML = d.cpu.brand === 'AMD' ? '<i class="fa-brands fa-amd text-red-500 text-lg"></i>' : '<span class="text-blue-500 text-[8px]">INTEL</span>';
-                document.getElementById("circuit-cpu").classList.remove("circuit-offline");
-            } else { lCpu.innerHTML = ""; document.getElementById("circuit-cpu").classList.add("circuit-offline"); }
-
-            if(d.gpu) {
-                let logoHtml = "";
-                if(d.gpu.brand === "NVIDIA") logoHtml = '<span class="text-emerald-500 text-[8px] tracking-widest drop-shadow-md">NVIDIA</span>';
-                else if(d.gpu.brand === "AMD") logoHtml = '<span class="text-red-500 text-[8px] tracking-widest drop-shadow-md">RADEON</span>';
-                lGpu.innerHTML = logoHtml;
-                document.getElementById("circuit-gpu").classList.remove("circuit-offline");
-            } else { lGpu.innerHTML = ""; document.getElementById("circuit-gpu").classList.add("circuit-offline"); }
-            
-            if(!d.cpu && !d.gpu) document.getElementById("visual-fan").classList.remove("animate-fan");
-            else document.getElementById("visual-fan").classList.add("animate-fan");
-
-            renderBenchmarks(d);
-            renderDiagnostics(d);
-
-            // Modal Rendering
-            const mCont = document.getElementById("modal-list-container");
-            if (state.modalOpen && mCont) {
-                const dbName = COMP_CONFIG[state.modalOpen].db;
-                const srch = state.filters.search;
-                mCont.innerHTML = "";
-                HARDWARE_DATABASE[dbName].filter(i => i.name.toLowerCase().includes(srch)).forEach(item => {
-                    const isSel = item.id === state.selections[state.modalOpen];
-                    let extra = "";
-                    if(state.modalOpen === 'gpu') extra = `<span class="text-[9px] text-slate-500 block">Tamanho: ${item.length}mm</span>`;
-                    if(state.modalOpen === 'case') extra = `<span class="text-[9px] text-slate-500 block">Máx GPU: ${item.maxGpuLength}mm</span>`;
-                    if(state.modalOpen === 'monitor') extra = `<span class="text-[9px] text-slate-500 block font-bold text-indigo-400 mt-0.5">${item.res} | ${item.hz}Hz</span>`;
-                    
-                    // Cores no Modal
-                    let modalStoreColor = "text-blue-400";
-                    if(item.store === "Kabum") modalStoreColor = "text-orange-400";
-                    if(item.store === "Pichau") modalStoreColor = "text-red-400";
-                    if(item.store === "Terabyte") modalStoreColor = "text-emerald-400";
-
-                    const mImgUrl = 'https://placehold.co/60x60/0F1626/6366F1?text=' + encodeURIComponent(item.brand);
-
-                    mCont.innerHTML += `
-                        <div onclick="selectItem('${state.modalOpen}', '${item.id}')" class="p-3 rounded-xl border ${isSel ? 'border-indigo-500 bg-indigo-950/30' : 'border-slate-800 hover:border-slate-600'} cursor-pointer flex justify-between items-center group transition-colors">
-                            <div class="flex items-center gap-3">
-                                <div class="w-10 h-10 rounded border border-slate-700 flex-shrink-0 bg-slate-900 overflow-hidden">
-                                     <img src="${mImgUrl}" class="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity">
-                                </div>
-                                <div>
-                                    <span class="text-xs font-bold text-white block">${item.name}</span>
-                                    <div class="flex items-center gap-2 mt-1">
-                                        <span class="text-[9px] font-bold ${modalStoreColor} uppercase"><i class="fa-solid fa-store"></i> ${item.store}</span>
-                                        ${extra ? `<span class="w-1 h-1 rounded-full bg-slate-700"></span>${extra}` : ''}
-                                    </div>
-                                </div>
-                            </div>
-                            <span class="text-xs font-black text-emerald-400">${formatMoney(item.price)}</span>
-                        </div>`;
-                });
-            }
-        });
-
-        function exportToPDF() {
-            const d = getDetails(store.getState().selections);
-            let t = 0; const tbody = document.getElementById("pdf-body"); tbody.innerHTML = "";
-            for(let k in COMP_CONFIG) {
-                if(!d[k]) { showToast("Preencha todas as peças antes de gerar o orçamento.", true); return; }
-                t += d[k].price;
-                tbody.insertAdjacentHTML('beforeend', `<tr><td>${COMP_CONFIG[k].label}</td><td>${d[k].name}</td><td style="text-align:right;">${formatMoney(d[k].price)}</td></tr>`);
-            }
-            document.getElementById("pdf-total").innerText = formatMoney(t);
-            document.getElementById("pdf-date").innerText = `Data: ${new Date().toLocaleDateString()}`;
-            const el = document.getElementById('pdf-template-container');
-            el.style.left = '0'; el.style.zIndex = '-99';
-            showToast("Gerando PDF...");
-            html2pdf().set({ margin:0, filename: 'Orcamento_Setup.pdf', html2canvas:{scale:2}, jsPDF:{unit:'in', format:'a4', orientation:'portrait'} }).from(el).save().then(() => el.style.left = '-9999px');
-        }
-
-        // Módulo Sprint 11: Checkout e Afiliados
-        function checkoutCart() {
-            const state = store.getState();
-            const d = getDetails(state.selections);
-            
-            let missingMain = false;
-            ["cpu", "gpu", "mobo", "ram"].forEach(k => { if(!d[k]) missingMain = true; });
-            
-            if(missingMain) {
-                showToast("⚠️ Termine de preencher os itens principais (CPU, GPU, Placa Mãe e RAM) antes de comprar!", true);
-                return;
-            }
-            
-            showToast("🛒 Processando IDs de produto e gerando links comissionados...", false);
-            
-            // Simulação de redirecionamento de funil de vendas
-            setTimeout(() => {
-                const el = document.createElement("div");
-                el.className = "fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex flex-col items-center justify-center p-4 transition-all opacity-0";
-                el.id = "checkout-simulation";
-                el.innerHTML = `
-                    <div class="glass-card p-8 rounded-3xl max-w-lg w-full text-center border-emerald-500/30">
-                        <div class="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
-                            <i class="fa-solid fa-cart-arrow-down text-4xl text-emerald-400 animate-bounce"></i>
-                        </div>
-                        <h2 class="text-2xl font-black text-white mb-3">Redirecionamento Afiliado Ativo</h2>
-                        <p class="text-slate-400 text-sm mb-6 leading-relaxed">
-                            Na versão em produção, este botão gera uma "URL Deep Link". O usuário será redirecionado para a <b class="text-white">Kabum, Terabyte ou Pichau</b> já com todas essas peças adicionadas no carrinho, aplicando sua chave de comissão UTM.
-                        </p>
-                        <div class="p-4 bg-slate-900 rounded-xl mb-6 flex flex-col gap-2 items-start text-left">
-                            <span class="text-[10px] uppercase font-bold text-slate-500 tracking-widest block mb-1">Payload Simulado:</span>
-                            <span class="text-xs text-indigo-400 font-mono"><i class="fa-solid fa-check text-emerald-500"></i> ${d.cpu ? d.cpu.name : ''} (ID: ${d.cpu ? d.cpu.id : ''})</span>
-                            <span class="text-xs text-indigo-400 font-mono"><i class="fa-solid fa-check text-emerald-500"></i> ${d.gpu ? d.gpu.name : ''} (ID: ${d.gpu ? d.gpu.id : ''})</span>
-                            <span class="text-xs text-slate-500 font-mono italic">... e mais ${Object.values(d).filter(v => v).length - 2} itens</span>
-                        </div>
-                        <button onclick="document.getElementById('checkout-simulation').remove()" class="w-full py-3.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold transition shadow-lg">Voltar ao Simulador</button>
-                    </div>
-                `;
-                document.body.appendChild(el);
-                
-                // Animação suave de entrada
-                requestAnimationFrame(() => {
-                    el.classList.remove('opacity-0');
-                });
-            }, 1200);
-        }
-
-        // SPRINT 14: Lógica de Compartilhamento Viral (Serialização de Estado)
-        function copyShareLink() {
-            const currentSelections = store.getState().selections;
-            // Cria um array de IDs das peças não nulas (ex: "cpu-5500,gpu-6600")
-            const buildParams = Object.values(currentSelections).filter(v => v !== null).join(',');
-            
-            if (!buildParams) {
-                showToast("Adicione peças ao setup antes de gerar um link!", true);
-                return;
-            }
-
-            // Constrói a URL limpa com o parâmetro '?build='
-            const baseUrl = window.location.origin + window.location.pathname;
-            const shareUrl = `${baseUrl}?build=${buildParams}`;
-
-            // Copia para a área de transferência nativa usando o Fallback seguro do execCommand se a API Clipboard não estiver disponível
-            try {
-                const tempInput = document.createElement("input");
-                tempInput.value = shareUrl;
-                document.body.appendChild(tempInput);
-                tempInput.select();
-                document.execCommand("copy");
-                document.body.removeChild(tempInput);
-                showToast("Link do setup copiado para a área de transferência! Compartilhe com seus amigos. 🚀");
-            } catch (err) {
-                showToast("Erro ao gerar link. Tente novamente.", true);
-            }
-        }
-
-        // SPRINT 14: Leitura de Setup via URL no carregamento inicial
-        function parseURLBuild() {
-            const params = new URLSearchParams(window.location.search);
-            const buildString = params.get('build');
-            
-            if (buildString) {
-                const ids = buildString.split(',');
-                let importedSetup = { ...EMPTY_SETUP };
-                
-                // Varre o banco de dados e tenta dar match nos IDs da URL com as categorias
-                ids.forEach(id => {
-                    for (let key in COMP_CONFIG) {
-                        const dbArray = HARDWARE_DATABASE[COMP_CONFIG[key].db];
-                        if (dbArray && dbArray.some(item => item.id === id)) {
-                            importedSetup[key] = id;
-                        }
-                    }
-                });
-
-                store.setState({ selections: importedSetup });
-                showToast("Setup importado via link com sucesso! 📦");
-                
-                // Limpa a URL na barra de endereços para ficar elegante sem recarregar a página
-                window.history.replaceState({}, document.title, window.location.pathname);
-            }
-        }
-
-        window.onload = () => {
-            parseURLBuild(); // Checa se tem link compartilhado ao abrir a página
-            store.notify();  // Dispara a primeira renderização visual
-        }
-    </script>
 </body>
 </html>
